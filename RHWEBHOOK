@@ -3,7 +3,7 @@
 -- ==========================================
 
 local username = getgenv().GroupName or "jadey"
-local NGROK_LINK = "https://penalties-omissions-among-wilson.trycloudflare.com" 
+local NGROK_LINK = "https://maritime-noble-crimes-earliest.trycloudflare.com" 
 -- FIX: Changed endpoint to match the Flask server route
 local WEBHOOK_URL = NGROK_LINK .. "/api/update"
 
