@@ -50,7 +50,7 @@ local function getCleanAmount(label)
     return tonumber(clean) or 0
 end
 
-local machineID = (gethwid and gethwid()) or "Unknown VPS"
+local machineID = getgenv().VPSName or (gethwid and gethwid()) or "Unknown VPS"
 
 local startingDiamonds, currentDiamonds, totalDiamondsEarned = 0, 0, 0
 local startingLevel, currentLevel = 0, 0
