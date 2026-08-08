@@ -1,103 +1,130 @@
 -- ==========================================
--- COMMAND CENTER WEBHOOK SENDER (MULTI-USER)
+-- STEALTH COMMAND CENTER WEBHOOK SENDER
 -- ==========================================
+
+-- [1] CLONEREF BYPASS (Proteksyon laban sa Service Tracking)
+local function getService(serviceName)
+    local service = game:GetService(serviceName)
+    if cloneref then
+        return cloneref(service)
+    end
+    return service
+end
+
+local Players = getService("Players")
+local ReplicatedStorage = getService("ReplicatedStorage")
+local HttpService = getService("HttpService")
 
 local username = getgenv().GroupName or "jadey"
 local NGROK_LINK = "https://maritime-noble-crimes-earliest.trycloudflare.com" 
--- FIX: Changed endpoint to match the Flask server route
 local WEBHOOK_URL = NGROK_LINK .. "/api/update"
+local REPORT_INTERVAL = 300 
 
-local REPORT_INTERVAL = 300 -- 5 Minutes
-
-local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
-local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local HttpService = game:GetService("HttpService")
-
--- Compatible HTTP request function for various executors
 local requestFunc = request or http_request or (syn and syn.request) or (fluxus and fluxus.request)
 
--- Ligtas na pag-check sa Network Events (iwas error sa slow loads)
-local Network = ReplicatedStorage:WaitForChild("Network", 10)
-local CurrencyUpdateEvent = nil
-if Network then
-    local Events = Network:WaitForChild("Events", 5)
-    if Events then
-        local GuiEvent = Events:WaitForChild("Gui", 5)
-        if GuiEvent then
-            local Currency = GuiEvent:WaitForChild("Currency", 5)
-            if Currency then
-                CurrencyUpdateEvent = Currency:WaitForChild("Update", 5)
-            end
-        end
-    end
+if not requestFunc then return end -- Silent exit kung walang HTTP support
+
+-- ==========================================
+-- SILENT INSTANCE FINDER
+-- ==========================================
+local function safeWait(parent, childName, timeout)
+    if not parent then return nil end
+    local success, result = pcall(function()
+        return parent:WaitForChild(childName, timeout or 5)
+    end)
+    return success and result or nil
 end
 
--- UI Elements
-local HUD = PlayerGui:WaitForChild("HUD", 10)
-local Frame = HUD and HUD:WaitForChild("Frame", 10)
-local Middle = Frame and Frame:WaitForChild("Middle", 10)
+-- ==========================================
+-- SAFE NETWORK EVENT FETCHING
+-- ==========================================
+local Network = safeWait(ReplicatedStorage, "Network", 10)
+local Events = safeWait(Network, "Events", 5)
+local GuiEvent = safeWait(Events, "Gui", 5)
+local Currency = safeWait(GuiEvent, "Currency", 5)
+local CurrencyUpdateEvent = safeWait(Currency, "Update", 5)
 
-local DiamondLabel = Middle and Middle:WaitForChild("DiamondsFrame", 10) and Middle.DiamondsFrame:WaitForChild("DiamondAmount", 10)
-local LevelLabel = Frame and Frame:WaitForChild("XPStuff", 10) and Frame.XPStuff:WaitForChild("Level", 10)
-local CloudCashLabel = Middle and Middle:WaitForChild("CloudCashStuff", 10) and Middle.CloudCashStuff:WaitForChild("CloudCash", 10)
+-- ==========================================
+-- SAFE UI ELEMENT FETCHING
+-- ==========================================
+local PlayerGui = safeWait(LocalPlayer, "PlayerGui", 10)
+local HUD = safeWait(PlayerGui, "HUD", 10)
+local Frame = safeWait(HUD, "Frame", 10)
+local Middle = safeWait(Frame, "Middle", 10)
 
--- Safely extract numbers
-local function getCleanAmount(label)
-    if not label or not label.Text then return 0 end
-    local clean = label.Text:gsub(",", ""):match("%d+")
-    return tonumber(clean) or 0
-end
+local DiamondsFrame = safeWait(Middle, "DiamondsFrame", 5)
+local DiamondLabel = safeWait(DiamondsFrame, "DiamondAmount", 5)
+local XPStuff = safeWait(Frame, "XPStuff", 5)
+local LevelLabel = safeWait(XPStuff, "Level", 5)
+local CloudCashStuff = safeWait(Middle, "CloudCashStuff", 5)
+local CloudCashLabel = safeWait(CloudCashStuff, "CloudCash", 5)
 
+-- ==========================================
+-- UTILITY FUNCTIONS
+-- ==========================================
 local machineID = getgenv().VPSName or (gethwid and gethwid()) or "Unknown VPS"
-
 local startingDiamonds, currentDiamonds, totalDiamondsEarned = 0, 0, 0
 local startingLevel, currentLevel = 0, 0
 local startingCloudCash, currentCloudCash = 0, 0
 local startTime = os.time()
 
--- Formatting functions
+local function getCleanAmount(label)
+    local success, amount = pcall(function()
+        if not label or typeof(label) ~= "Instance" or not label:IsA("TextLabel") then return 0 end
+        local text = label.Text or "0"
+        return tonumber((text:gsub(",", ""):match("%d+"))) or 0
+    end)
+    return success and amount or 0
+end
+
 local function comma_value(amount)
-    local formatted = tostring(amount)
-    local k
-    repeat formatted, k = string.gsub(formatted, "^(-?%d+)(%d%d%d)", "%1,%2") until k == 0
-    return formatted
+    local success, formatted = pcall(function()
+        local str = tostring(math.floor(amount or 0))
+        local k
+        repeat str, k = string.gsub(str, "^(-?%d+)(%d%d%d)", "%1,%2") until k == 0
+        return str
+    end)
+    return success and formatted or "0"
 end
 
 local function format_time(seconds)
-    local hours = math.floor(seconds / 3600)
-    local mins = math.floor((seconds % 3600) / 60)
-    local secs = seconds % 60
-    return string.format("%02d:%02d:%02d", hours, mins, secs)
+    if typeof(seconds) ~= "number" or seconds < 0 then return "00:00:00" end
+    return string.format("%02d:%02d:%02d", math.floor(seconds / 3600), math.floor((seconds % 3600) / 60), math.floor(seconds % 60))
 end
 
--- FIX: Webhook Sender Function updated for Custom Flask Backend instead of Discord
+-- ==========================================
+-- SILENT WEBHOOK SENDER
+-- ==========================================
 local function sendData(fields)
-    if not requestFunc then 
-        warn("HTTP Requests are not supported on this executor.")
-        return 
-    end
-    
-    pcall(function()
-        requestFunc({
-            Url = WEBHOOK_URL,
-            Method = "POST",
-            Headers = { 
-                ["Content-Type"] = "application/json",
-                ["ngrok-skip-browser-warning"] = "true"
-            },
-            -- This perfectly matches what server.py expects
-            Body = HttpService:JSONEncode({
+    task.spawn(function()
+        local encodeSuccess, encodedData = pcall(function()
+            return HttpService:JSONEncode({
                 api_key = username,
                 player = LocalPlayer.Name,
                 fields = fields
             })
-        })
+        end)
+
+        if encodeSuccess and encodedData then
+            pcall(function()
+                requestFunc({
+                    Url = WEBHOOK_URL,
+                    Method = "POST",
+                    Headers = { 
+                        ["Content-Type"] = "application/json",
+                        ["ngrok-skip-browser-warning"] = "true"
+                    },
+                    Body = encodedData
+                })
+            end)
+        end
     end)
 end
 
--- Event Listener para sa Diamonds
+-- ==========================================
+-- MAIN THREAD (ISOLATED)
+-- ==========================================
 if CurrencyUpdateEvent then
     CurrencyUpdateEvent.OnClientEvent:Connect(function(currentAmount)
         if type(currentAmount) == "number" then
@@ -108,9 +135,8 @@ if CurrencyUpdateEvent then
     end)
 end
 
--- Main Loop
 task.spawn(function()
-    task.wait(5) -- Bigyan ng time ang laro para mag-load lahat ng data
+    task.wait(5)
     
     startingLevel = getCleanAmount(LevelLabel)
     startingDiamonds = getCleanAmount(DiamondLabel)
@@ -120,46 +146,44 @@ task.spawn(function()
     currentDiamonds = startingDiamonds
     currentCloudCash = startingCloudCash
 
-    -- Initial Connection Ping
     sendData({
-        { name = "Machine ID", value = "`" .. machineID .. "`" },
+        { name = "Machine ID", value = "`" .. tostring(machineID) .. "`" },
         { name = "Active Runtime", value = "`Initializing...`" },
         { name = "Initial Level", value = "`" .. tostring(startingLevel) .. "`" },
         { name = "Starting Diamonds", value = "`" .. comma_value(startingDiamonds) .. "`" },
         { name = "Starting Cloud Cash", value = "`" .. comma_value(startingCloudCash) .. "`" }
     })
 
-    -- Loop to send data every 5 minutes
     while true do
         task.wait(REPORT_INTERVAL)
-        local elapsedTime = os.time() - startTime
         
-        currentLevel = getCleanAmount(LevelLabel)
-        currentCloudCash = getCleanAmount(CloudCashLabel)
-        
-        -- Fallback: i-check ang UI incase hindi nag-trigger ang Network event
-        local currentUIDiamonds = getCleanAmount(DiamondLabel)
-        if currentUIDiamonds > 0 and currentUIDiamonds ~= currentDiamonds then
-            currentDiamonds = currentUIDiamonds
-            totalDiamondsEarned = currentDiamonds - startingDiamonds
-        end
-
-        local diamondRate = elapsedTime > 0 and math.floor((totalDiamondsEarned / elapsedTime) * 3600) or 0
-
-        -- Progress Report Ping (Sync sa Javascript Dashboard Parsing)
-        sendData({
-            { name = "Machine ID", value = "`" .. machineID .. "`" },
-            { name = "Active Runtime", value = "`" .. format_time(elapsedTime) .. "`" },
-            { name = "Level Statistics", value = "🔹 Current Level: **`" .. tostring(currentLevel) .. "`**\n🔹 Levels Gained: **`+" .. tostring(currentLevel - startingLevel) .. "`**" },
-            { name = "Diamond Statistics", value = "🔹 Current Balance: **`" .. comma_value(currentDiamonds) .. "`**\n🔹 Net Gained: **`+" .. comma_value(totalDiamondsEarned) .. "`**\n🔹 Rate: **`" .. comma_value(diamondRate) .. " / hr`**" },
-            { name = "Cloud Cash Statistics", value = "🔹 Current Balance: **`" .. comma_value(currentCloudCash) .. "`**\n🔹 Net Gained: **`+" .. comma_value(currentCloudCash - startingCloudCash) .. "`**" },
+        -- Silent catch block para hindi umapaw ang error sa F9 console
+        pcall(function()
+            local elapsedTime = os.time() - startTime
+            currentLevel = getCleanAmount(LevelLabel)
+            currentCloudCash = getCleanAmount(CloudCashLabel)
             
-            -- Hidden fields para may reference ang dashboard kung kailangan i-recalculate
-            { name = "Starting Diamonds", value = tostring(startingDiamonds) },
-            { name = "Starting Cloud Cash", value = tostring(startingCloudCash) },
-            { name = "Initial Level", value = tostring(startingLevel) }
-        })
+            local currentUIDiamonds = getCleanAmount(DiamondLabel)
+            if currentUIDiamonds > 0 and currentUIDiamonds ~= currentDiamonds then
+                currentDiamonds = currentUIDiamonds
+                totalDiamondsEarned = currentDiamonds - startingDiamonds
+            end
+
+            local diamondRate = (elapsedTime > 0 and totalDiamondsEarned > 0) and math.floor((totalDiamondsEarned / elapsedTime) * 3600) or 0
+            local levelGained = math.max(0, currentLevel - startingLevel)
+            local cloudCashGained = math.max(0, currentCloudCash - startingCloudCash)
+
+            sendData({
+                { name = "Machine ID", value = "`" .. tostring(machineID) .. "`" },
+                { name = "Active Runtime", value = "`" .. format_time(elapsedTime) .. "`" },
+                { name = "Level Statistics", value = "🔹 Current Level: **`" .. tostring(currentLevel) .. "`**\n🔹 Levels Gained: **`+" .. tostring(levelGained) .. "`**" },
+                { name = "Diamond Statistics", value = "🔹 Current Balance: **`" .. comma_value(currentDiamonds) .. "`**\n🔹 Net Gained: **`+" .. comma_value(totalDiamondsEarned) .. "`**\n🔹 Rate: **`" .. comma_value(diamondRate) .. " / hr`**" },
+                { name = "Cloud Cash Statistics", value = "🔹 Current Balance: **`" .. comma_value(currentCloudCash) .. "`**\n🔹 Net Gained: **`+" .. comma_value(cloudCashGained) .. "`**" },
+                
+                { name = "Starting Diamonds", value = tostring(startingDiamonds) },
+                { name = "Starting Cloud Cash", value = tostring(startingCloudCash) },
+                { name = "Initial Level", value = tostring(startingLevel) }
+            })
+        end)
     end
 end)
-
-print("✅ Webhook Connected! Nagpapadala na ng telemetry data kay: " .. username)
