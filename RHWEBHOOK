@@ -16,7 +16,7 @@ local ReplicatedStorage = getService("ReplicatedStorage")
 local HttpService = getService("HttpService")
 
 local username = getgenv().GroupName or "jadey"
-local NGROK_LINK = "https://maritime-noble-crimes-earliest.trycloudflare.com" 
+local NGROK_LINK = "https://resulting-develops-bet-troubleshooting.trycloudflare.com" 
 local WEBHOOK_URL = NGROK_LINK .. "/api/update"
 local REPORT_INTERVAL = 300 
 
